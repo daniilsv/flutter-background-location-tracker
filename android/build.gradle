@@ -28,6 +28,7 @@ apply plugin: 'kotlin-android'
 android {
     compileSdkVersion 34
 
+    namespace "com.icapps.background_location_tracker"
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
     }
