@@ -12,14 +12,12 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
-import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
-import com.huawei.hms.api.HuaweiApiAvailability
 import com.icapps.background_location_tracker.flutter.FlutterBackgroundManager
 import com.icapps.background_location_tracker.utils.ActivityCounter
 import com.icapps.background_location_tracker.utils.Logger
@@ -44,7 +42,6 @@ internal class LocationUpdatesService : Service() {
      * Contains parameters used by [com.google.android.gms.location.FusedLocationProviderApi].
      */
     private var locationRequest: LocationRequest? = null
-    private var huaweiLocationRequest: com.huawei.hms.location.LocationRequest? = null
 
     /**
      * Provides access to the Fused Location Provider API.
@@ -55,7 +52,6 @@ internal class LocationUpdatesService : Service() {
      * Callback for changes in location.
      */
     private var locationCallback: LocationCallback? = null
-    private var huaweiLocationCallback: com.huawei.hms.location.LocationCallback? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -73,13 +69,6 @@ internal class LocationUpdatesService : Service() {
                 onNewLocation(locationResult.lastLocation)
             }
         }
-        huaweiLocationCallback = object : com.huawei.hms.location.LocationCallback() {
-            override fun onLocationResult(
-                    locationResult: com.huawei.hms.location.LocationResult) {
-                super.onLocationResult(locationResult)
-                onNewLocation(locationResult.lastLocation)
-            }
-        }
         wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "mijnmooiestraat:location_updates")
         createLocationRequest()
         getLastLocation()
@@ -89,24 +78,11 @@ internal class LocationUpdatesService : Service() {
         }
     }
 
-    private fun checkGMS(): Boolean {
-        val gApi = GoogleApiAvailability.getInstance()
-        val resultCode = gApi.isGooglePlayServicesAvailable(this)
-        return resultCode ==
-                com.google.android.gms.common.ConnectionResult.SUCCESS
-    }
-
-    private fun checkHMS(): Boolean {
-        val hApi = HuaweiApiAvailability.getInstance()
-        val resultCode = hApi.isHuaweiMobileServicesAvailable(this)
-        return resultCode == com.huawei.hms.api.ConnectionResult.SUCCESS
-    }
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Logger.debug(TAG, "Service started")
         val startedFromNotification = intent?.getBooleanExtra(
-                EXTRA_STARTED_FROM_NOTIFICATION,
-                false
+            EXTRA_STARTED_FROM_NOTIFICATION,
+            false
         ) ?: false
 
         // We got here because the user decided to remove location updates from the notification.
@@ -173,7 +149,7 @@ internal class LocationUpdatesService : Service() {
             val pw = PrintWriter(sw)
             e.printStackTrace(pw)
             pw.flush()
-            Logger.error(sw.toString(), "onUnbind failed to execute");
+            Logger.error(sw.toString(),"onUnbind failed to execute");
         }
 
         return true // Ensures onRebind() is called when a client re-binds.
@@ -184,6 +160,9 @@ internal class LocationUpdatesService : Service() {
         if (wakeLock?.isHeld == true) {
             wakeLock?.release()
         }
+        
+        // Force clean up Flutter background resources when service is destroyed
+        FlutterBackgroundManager.forceCleanup()
     }
 
     /**
@@ -201,41 +180,17 @@ internal class LocationUpdatesService : Service() {
         } else {
             startService(Intent(applicationContext, LocationUpdatesService::class.java))
         }
-
-        if (checkGMS()) {
-            val locationRequest = locationRequest ?: return
-            val locationCallback = locationCallback ?: return
-            try {
-                fusedLocationClient?.requestLocationUpdates(locationRequest, locationCallback, Looper.myLooper())
-            } catch (unlikely: SecurityException) {
-                if (wakeLock?.isHeld == true) {
-                    wakeLock?.release()
-                }
-                SharedPrefsUtil.saveIsTracking(this, false)
-                Logger.error(TAG, "Lost location permission. Could not request updates. $unlikely")
+        val locationRequest = locationRequest ?: return
+        val locationCallback = locationCallback ?: return
+        try {
+            fusedLocationClient?.requestLocationUpdates(locationRequest, locationCallback, Looper.myLooper())
+        } catch (unlikely: SecurityException) {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
             }
-        } else if (checkHMS()) {
-            val huaweiLocationRequest = huaweiLocationRequest ?: return
-            val huaweiLocationCallback = huaweiLocationCallback ?: return
-
-            try {
-                com.huawei.hms.location
-                        .LocationServices.getFusedLocationProviderClient(this)
-                        .requestLocationUpdates(
-                                huaweiLocationRequest,
-                                huaweiLocationCallback,
-                                Looper.getMainLooper()
-                        )
-            } catch (unlikely: SecurityException) {
-                if (wakeLock?.isHeld == true) {
-                    wakeLock?.release()
-                }
-                SharedPrefsUtil.saveIsTracking(this, false)
-                Logger.error(TAG, "Lost location permission. Could not request updates. $unlikely")
-            }
+            SharedPrefsUtil.saveIsTracking(this, false)
+            Logger.error(TAG, "Lost location permission. Could not request updates. $unlikely")
         }
-
-
     }
 
     /**
@@ -247,28 +202,14 @@ internal class LocationUpdatesService : Service() {
             wakeLock?.release();
         }
         Logger.debug(TAG, "Removing location updates")
-        if (checkGMS()) {
-            val locationCallback = locationCallback ?: return
-            try {
-                fusedLocationClient?.removeLocationUpdates(locationCallback)
-                SharedPrefsUtil.saveIsTracking(this, false)
-                stopSelf()
-            } catch (unlikely: SecurityException) {
-                SharedPrefsUtil.saveIsTracking(this, true)
-                Logger.error(TAG, "Lost location permission. Could not remove updates. $unlikely")
-            }
-        } else if (checkGMS()) {
-            val huaweiLocationCallback = huaweiLocationCallback ?: return
-            try {
-                com.huawei.hms.location.LocationServices
-                        .getFusedLocationProviderClient(this)
-                        .removeLocationUpdates(huaweiLocationCallback)
-                SharedPrefsUtil.saveIsTracking(this, false)
-                stopSelf()
-            } catch (unlikely: SecurityException) {
-                SharedPrefsUtil.saveIsTracking(this, true)
-                Logger.error(TAG, "Lost location permission. Could not remove updates. $unlikely")
-            }
+        val locationCallback = locationCallback ?: return
+        try {
+            fusedLocationClient?.removeLocationUpdates(locationCallback)
+            SharedPrefsUtil.saveIsTracking(this, false)
+            stopSelf()
+        } catch (unlikely: SecurityException) {
+            SharedPrefsUtil.saveIsTracking(this, true)
+            Logger.error(TAG, "Lost location permission. Could not remove updates. $unlikely")
         }
     }
 
@@ -310,20 +251,11 @@ internal class LocationUpdatesService : Service() {
     private fun createLocationRequest() {
         val interval = SharedPrefsUtil.trackingInterval(this)
         val distanceFilter = SharedPrefsUtil.distanceFilter(this)
-        if (checkGMS()) {
-            locationRequest = LocationRequest.create()
-                    .setInterval(interval)
-                    .setFastestInterval(interval / 2)
-                    .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
-                    .setSmallestDisplacement(distanceFilter)
-        } else if (checkHMS()) {
-            huaweiLocationRequest =
-                    com.huawei.hms.location.LocationRequest.create()
-                            .setInterval(interval)
-                            .setFastestInterval(interval / 2)
-                            .setPriority(com.huawei.hms.location.LocationRequest.PRIORITY_HIGH_ACCURACY)
-                            .setSmallestDisplacement(distanceFilter)
-        }
+        locationRequest = LocationRequest.create()
+            .setInterval(interval)
+            .setFastestInterval(interval / 2)
+            .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+            .setSmallestDisplacement(distanceFilter)
     }
 
     /**

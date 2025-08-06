@@ -11,7 +11,6 @@ import com.icapps.background_location_tracker.utils.SharedPrefsUtil
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.embedding.engine.loader.FlutterLoader
-import io.flutter.embedding.engine.plugins.shim.ShimPluginRegistry
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.FlutterCallbackInformation
@@ -20,43 +19,124 @@ internal object FlutterBackgroundManager {
     private const val BACKGROUND_CHANNEL_NAME = "com.icapps.background_location_tracker/background_channel"
 
     private val flutterLoader = FlutterLoader()
+    private var backgroundChannel: MethodChannel? = null
+    private var isInitialized = false
+    private var pendingLocation: Location? = null
+    private var isSettingUp = false
 
     private fun getInitializedFlutterEngine(ctx: Context): FlutterEngine {
-        Logger.debug("BackgroundManager", "Creating new engine")
-
-        val engine = FlutterEngine(ctx)
-        //Backwards compatibility with v1. We register all the user's plugins.
-        BackgroundLocationTrackerPlugin.pluginRegistryCallback?.registerWith(ShimPluginRegistry(engine))
-        return engine
+        Logger.debug("BackgroundManager", "Getting Flutter engine")
+        return BackgroundLocationTrackerPlugin.getFlutterEngine(ctx)
     }
 
     fun sendLocation(ctx: Context, location: Location) {
         Logger.debug("BackgroundManager", "Location: ${location.latitude}: ${location.longitude}")
-        val engine = getInitializedFlutterEngine(ctx)
+        
+        if (isInitialized) {
+            // Engine is already initialized, send location immediately
+            sendLocationToChannel(ctx, location)
+        } else {
+            // Store the location and initialize if needed
+            pendingLocation = location
+            setupBackgroundChannelIfNeeded(ctx)
+        }
+    }
 
-        val backgroundChannel = MethodChannel(engine.dartExecutor, BACKGROUND_CHANNEL_NAME)
-        backgroundChannel.setMethodCallHandler { call, result ->
+    private fun setupBackgroundChannelIfNeeded(ctx: Context) {
+        if (backgroundChannel != null || isSettingUp) {
+            Logger.debug("BackgroundManager", "Setup already in progress or completed")
+            return // Already setup or in progress
+        }
+
+        isSettingUp = true
+        Logger.debug("BackgroundManager", "Setting up background channel and dart executor")
+        val engine = getInitializedFlutterEngine(ctx)
+        
+        // Check if the DartExecutor is already running to prevent the error
+        if (engine.dartExecutor.isExecutingDart) {
+            Logger.debug("BackgroundManager", "DartExecutor is already running, reusing existing executor")
+            backgroundChannel = MethodChannel(engine.dartExecutor, BACKGROUND_CHANNEL_NAME)
+            backgroundChannel?.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "initialized" -> {
+                        Logger.debug("BackgroundManager", "Dart background isolate already initialized")
+                        isInitialized = true
+                        isSettingUp = false
+                        result.success(true)
+                        
+                        // Send any pending location
+                        pendingLocation?.let { location ->
+                            Logger.debug("BackgroundManager", "Sending pending location after reuse")
+                            sendLocationToChannel(ctx, location)
+                            pendingLocation = null
+                        }
+                    }
+                    else -> {
+                        result.notImplemented()
+                    }
+                }
+            }
+            
+            // Mark as initialized since the executor is already running
+            isInitialized = true
+            isSettingUp = false
+            
+            // Send any pending location immediately if we have one
+            pendingLocation?.let { location ->
+                Logger.debug("BackgroundManager", "Sending pending location immediately (executor already running)")
+                sendLocationToChannel(ctx, location)
+                pendingLocation = null
+            }
+            
+            return
+        }
+        
+        backgroundChannel = MethodChannel(engine.dartExecutor, BACKGROUND_CHANNEL_NAME)
+        backgroundChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
-                "initialized" -> handleInitialized(call, result, ctx, backgroundChannel, location, engine)
+                "initialized" -> {
+                    Logger.debug("BackgroundManager", "Dart background isolate initialized")
+                    isInitialized = true
+                    isSettingUp = false
+                    result.success(true)
+                    
+                    // Send any pending location
+                    pendingLocation?.let { location ->
+                        Logger.debug("BackgroundManager", "Sending pending location after initialization")
+                        sendLocationToChannel(ctx, location)
+                        pendingLocation = null
+                    }
+                }
                 else -> {
                     result.notImplemented()
-                    engine.destroy()
                 }
             }
         }
 
         if (!flutterLoader.initialized()) {
+            Logger.debug("BackgroundManager", "Initializing FlutterLoader")
             flutterLoader.startInitialization(ctx)
         }
+        
         flutterLoader.ensureInitializationCompleteAsync(ctx, null, Handler(Looper.getMainLooper())) {
+            Logger.debug("BackgroundManager", "FlutterLoader initialization complete, executing Dart callback")
             val callbackHandle = SharedPrefsUtil.getCallbackHandle(ctx)
             val callbackInfo = FlutterCallbackInformation.lookupCallbackInformation(callbackHandle)
             val dartBundlePath = flutterLoader.findAppBundlePath()
-            engine.dartExecutor.executeDartCallback(DartExecutor.DartCallback(ctx.assets, dartBundlePath, callbackInfo))
+            
+            try {
+                engine.dartExecutor.executeDartCallback(DartExecutor.DartCallback(ctx.assets, dartBundlePath, callbackInfo))
+            } catch (e: Exception) {
+                Logger.debug("BackgroundManager", "Error executing Dart callback: ${e.message}")
+                isSettingUp = false
+            }
         }
     }
 
-    private fun handleInitialized(call: MethodCall, result: MethodChannel.Result, ctx: Context, channel: MethodChannel, location: Location, engine: FlutterEngine) {
+    private fun sendLocationToChannel(ctx: Context, location: Location) {
+        val channel = backgroundChannel ?: return
+        Logger.debug("BackgroundManager", "Sending location to initialized channel")
+        
         val data = mutableMapOf<String, Any>()
         data["lat"] = location.latitude
         data["lon"] = location.longitude
@@ -77,19 +157,37 @@ internal object FlutterBackgroundManager {
 
         channel.invokeMethod("onLocationUpdate", data, object : MethodChannel.Result {
             override fun success(result: Any?) {
-                Logger.debug("BackgroundManager", "Got success, destroy engine!")
-                engine.destroy()
+                Logger.debug("BackgroundManager", "Successfully sent location update")
             }
 
             override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
-                Logger.debug("BackgroundManager", "Got error, destroy engine! $errorCode - $errorMessage : $errorDetails")
-                engine.destroy()
+                Logger.debug("BackgroundManager", "Error sending location update: $errorCode - $errorMessage : $errorDetails")
             }
 
             override fun notImplemented() {
-                Logger.debug("BackgroundManager", "Got not implemented, destroy engine!")
-                engine.destroy()
+                Logger.debug("BackgroundManager", "Method not implemented for location update")
             }
         })
+    }
+    
+    fun cleanup() {
+        Logger.debug("BackgroundManager", "Cleaning up background resources")
+        isInitialized = false
+        isSettingUp = false
+        backgroundChannel?.setMethodCallHandler(null)
+        backgroundChannel = null
+        pendingLocation = null
+        
+        // Instead of destroying the engine completely, just mark it as not initialized
+        // This allows for reuse without the "DartExecutor already running" error
+        Logger.debug("BackgroundManager", "Background channel cleaned up, ready for reuse")
+    }
+    
+    fun forceCleanup() {
+        Logger.debug("BackgroundManager", "Force cleaning up all background resources")
+        cleanup()
+        
+        // Clean up the Flutter engine completely to prevent DartExecutor reuse issues
+        BackgroundLocationTrackerPlugin.cleanupFlutterEngine()
     }
 }

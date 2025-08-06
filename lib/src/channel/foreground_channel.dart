@@ -30,8 +30,6 @@ class ForegroundChannel {
         'android_config_channel_name': config.androidConfig.channelName,
         'android_config_notification_body':
             config.androidConfig.notificationBody,
-        'android_config_notification_title':
-            config.androidConfig.notificationTitle,
         'android_config_notification_icon':
             config.androidConfig.notificationIcon,
         'android_config_enable_notification_location_updates':
