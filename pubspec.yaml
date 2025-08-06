@@ -5,11 +5,10 @@ version: 1.4.3
 homepage: https://github.com/daniilsv/flutter-background-location-tracker
 
 environment:
-  sdk: ">=2.12.0"
+  sdk: ">=3.0.0 <4.0.0"
   flutter: ">=2.0.0"
 
 dependencies:
-  collection: ^1.18.0
   flutter:
     sdk: flutter
 
