@@ -1,5 +1,5 @@
-import 'package:background_location_tracker/src/model/config/android_config.dart';
-import 'package:background_location_tracker/src/model/config/ios_config.dart';
+import 'android_config.dart';
+import 'ios_config.dart';
 
 /// BackgroundLocationTrackerConfig will be used to setup the plugin
 ///

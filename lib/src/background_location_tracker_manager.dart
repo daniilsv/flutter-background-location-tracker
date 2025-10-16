@@ -1,16 +1,18 @@
 import 'dart:async';
 
-import 'package:background_location_tracker/background_location_tracker.dart';
-import 'package:background_location_tracker/src/channel/background_channel.dart';
-import 'package:background_location_tracker/src/channel/foreground_channel.dart';
-import 'package:background_location_tracker/src/util/logger.dart';
+import '../background_location_tracker.dart';
+import 'channel/background_channel.dart';
+import 'channel/foreground_channel.dart';
+import 'util/logger.dart';
 
 typedef LocationUpdateCallback = Future<void> Function(
     BackgroundLocationUpdateData data);
 
 class BackgroundLocationTrackerManager {
-  static Future<void> initialize(Function callback,
-      {BackgroundLocationTrackerConfig? config}) {
+  static Future<void> initialize(
+    Function callback, {
+    BackgroundLocationTrackerConfig? config,
+  }) {
     final pluginConfig = config ??= const BackgroundLocationTrackerConfig();
     BackgroundLocationTrackerLogger.enableLogging = pluginConfig.loggingEnabled;
     return ForegroundChannel.initialize(callback, config: pluginConfig);
